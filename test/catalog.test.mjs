@@ -142,9 +142,12 @@ await test('proxyFor falls back to ALL_PROXY', () => {
 console.log('\nusage normalization')
 
 await test('normalizeWindow reads percent and reset', () => {
-  const w = normalizeWindow({ used_percent: 42, resets_at: '2026-09-19T10:00:00Z', window_minutes: 300 })
+  // Field names and units follow the app-server protocol schema
+  // (`RateLimitWindow`): camelCase, and resetsAt as Unix seconds.
+  const w = normalizeWindow({ usedPercent: 42, resetsAt: 1789813175, windowDurationMins: 300 })
   assert.equal(w.usedPercent, 42)
   assert.equal(w.windowMinutes, 300)
+  assert.equal(w.resetsAt, new Date(1789813175 * 1000).toISOString())
 })
 
 await test('normalizeWindow rejects an unusable object', () => {
@@ -153,16 +156,26 @@ await test('normalizeWindow rejects an unusable object', () => {
   assert.equal(normalizeWindow('x'), undefined)
 })
 
-await test('normalizeUsage reads known window names', () => {
-  const usage = normalizeUsage({ primary: { used_percent: 10 }, secondary: { used_percent: 20 }, plan_type: 'plus' })
+await test('normalizeUsage reads the nested rateLimits bucket', () => {
+  const usage = normalizeUsage({
+    rateLimits: {
+      primary: { usedPercent: 10 },
+      secondary: { usedPercent: 20 },
+      planType: 'plus',
+    },
+  })
   assert.equal(usage.windows.primary.usedPercent, 10)
   assert.equal(usage.windows.secondary.usedPercent, 20)
   assert.equal(usage.planType, 'plus')
 })
 
-await test('normalizeUsage falls back to a rate_limits map', () => {
-  const usage = normalizeUsage({ rate_limits: { rolling: { used_percent: 5 } } })
-  assert.equal(usage.windows.rolling.usedPercent, 5)
+await test('normalizeUsage prefers the multi-bucket view when present', () => {
+  const usage = normalizeUsage({
+    rateLimits: { primary: { usedPercent: 1 } },
+    rateLimitsByLimitId: { codex: { primary: { usedPercent: 5 } } },
+  })
+  assert.deepEqual(Object.keys(usage.buckets), ['codex'])
+  assert.equal(usage.windows.primary.usedPercent, 5)
 })
 
 await test('normalizeUsage returns undefined when nothing is window-shaped', () => {

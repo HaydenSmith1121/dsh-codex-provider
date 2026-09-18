@@ -60,16 +60,56 @@ namespace resolves to a section holding the fields the page renders.
 Two things could not be confirmed against the live backend, and neither is
 papered over:
 
-**1. The usage endpoint path.** `USAGE_PATH = '/usage'` was written from the
-shape other providers use, not from evidence. Probing candidates against the real
-backend returned a uniform **403 HTML page for every path — including nonsense
-ones** — which means Cloudflare rejected the request shape before path routing
-was ever reached. That probe therefore proved *nothing*, and the path remains an
-assumption. It is low-risk only because `read()` returns `undefined` on any
-non-200 or unparseable body and the feature is decorative: a wrong path means
-the usage pill never appears, not a broken turn. `test/usage.test.mjs` pins that
-contract from eight angles, including that a missing credential makes no request
-and a slow endpoint cannot hang the caller.
+**1. The usage endpoint path and payload shape.** RESOLVED — and both were
+wrong.
+
+The plugin originally guessed `USAGE_PATH = '/usage'` and parsed
+`used_percent` / `resets_at` (ISO string) / `window_minutes` at the payload's
+top level. Every field was wrong, and the parser would have returned `undefined`
+for every real response.
+
+The authoritative source turned out to be the CLI's own published protocol:
+
+```sh
+codex app-server generate-json-schema --out <dir>
+```
+
+That emits ~300 JSON Schema files describing the app-server contract, including
+`GetAccountRateLimitsResponse.json`. Reading it settled the shape:
+
+| Guessed | Authoritative (`RateLimitWindow` / `RateLimitSnapshot`) |
+|---|---|
+| `used_percent` | `usedPercent` |
+| `resets_at` (ISO string) | `resetsAt` (**Unix seconds, int64**) |
+| `window_minutes` | `windowDurationMins` |
+| top-level `primary` / `secondary` | nested under `rateLimits`, plus a multi-bucket `rateLimitsByLimitId` |
+| — | `planType`, `credits.unlimited`, `rateLimitReachedType`, `ordinaryUsageAllowed` |
+
+The CLI binary additionally references `/api/codex/usage`, so the path constant
+was corrected from `/usage` to `/api/codex/usage` — and because that path is
+host-root-relative while the configured base URL ends in `/backend-api/codex`,
+`read()` now resolves it against the URL origin. A naive join would have
+requested `/backend-api/codex/api/codex/usage`.
+
+`normalizeUsage` was rewritten against the real schema: it prefers the
+multi-bucket view over the single backward-compatible one, converts `resetsAt`
+from seconds to one consistent unit, and surfaces `unlimited` so a consumer does
+not draw a meter for an uncapped account.
+
+**What is still not confirmed:** a live 200 from that endpoint. Every attempt
+returned a uniform **403 HTML page from Cloudflare** — including for paths that
+cannot exist — so the block happens before path routing and proves nothing about
+the path itself. That is the residual risk, and it stays low only because
+`read()` returns `undefined` on any non-200 and the feature is decorative: a
+wrong path costs a missing pill, not a broken turn.
+
+**The same schema also corroborates the token mapping.** `TokenUsageBreakdown`
+defines `inputTokens`, `cachedInputTokens`, `outputTokens`,
+`reasoningOutputTokens`, `totalTokens` — the disjoint-counts model this plugin
+implements, where cached input is subtracted out of the input total. The
+`ReasoningTextDeltaNotification` / `ReasoningSummaryTextDeltaNotification`
+schemas likewise confirm that reasoning arrives on its own channel, which is how
+the translator treats it.
 
 **2. The streaming event vocabulary.** See the dedicated section below.
 
@@ -365,6 +405,8 @@ Recorded because each was caught by a test rather than by inspection:
 | 13 | A transient `chatgpt.com` outage took the whole route down | The transport had a single hardcoded origin | Fail over between the two built-in origins, transport failures only |
 | 14 | Failover redirected a user's **custom** `baseURL` to OpenAI's endpoint | Failover was applied to every origin | Restrict it to the built-in origin set, so a self-hosted gateway is never bypassed |
 | 15 | A throwing attachment service failed the whole turn | `projectImages` awaited the resolver without a guard | Degrade that one image to a placeholder instead of losing the turn |
+| 16 | **Every field of the usage payload was wrong** | Guessed `used_percent`/`resets_at`/`window_minutes` at the top level; the real contract is `usedPercent`/`resetsAt`(Unix seconds)/`windowDurationMins` nested under `rateLimits` | Rewrote against the CLI's published JSON Schema |
+| 17 | The usage path was `/usage` | Guessed from other providers; the CLI binary references `/api/codex/usage` | Corrected, and resolved against the URL origin rather than the API base |
 
 Items 10 and 11 were found by probing and by a test that started failing for the
 right reason — not by inspection. Item 12 came out of writing tests for the

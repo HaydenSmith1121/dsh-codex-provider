@@ -7,7 +7,7 @@
 import { strict as assert } from 'node:assert'
 import { createServer } from 'node:http'
 import { Context } from '@deepseek-ai/cordis'
-import { UsageService } from '../lib/usage.js'
+import { UsageService, originOf } from '../lib/usage.js'
 
 let passed = 0
 let failed = 0
@@ -42,24 +42,112 @@ console.log('usage service')
 await test('a well-formed payload is normalized', async () => {
   const h = await withService((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ primary: { used_percent: 42, resets_at: '2026-09-19T10:00:00Z' }, plan_type: 'plus' }))
+    res.end(JSON.stringify({
+      rateLimits: { primary: { usedPercent: 42, resetsAt: 1789813175, windowDurationMins: 300 }, planType: 'plus' },
+    }))
   })
   const usage = await h.service.read()
   await h.stop()
   assert.equal(usage.windows.primary.usedPercent, 42)
   assert.equal(usage.planType, 'plus')
+  assert.equal(usage.windows.primary.windowMinutes, 300)
 })
 
-await test('requests the configured path', async () => {
-  const seen = []
+await test('resetsAt is Unix seconds and becomes an ISO instant', async () => {
   const h = await withService((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ rateLimits: { primary: { usedPercent: 1, resetsAt: 1789813175 } } }))
+  })
+  const usage = await h.service.read()
+  await h.stop()
+  // 1789813175s -> 2026-09-19T18:19:35.000Z
+  assert.equal(usage.windows.primary.resetsAt, new Date(1789813175 * 1000).toISOString())
+  assert.match(usage.windows.primary.resetsAt, /^2026-/)
+})
+
+await test('the multi-bucket view wins over the single backward-compatible one', async () => {
+  const h = await withService((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({
+      rateLimits: { primary: { usedPercent: 1 } },
+      rateLimitsByLimitId: {
+        codex: { primary: { usedPercent: 10 }, planType: 'plus' },
+        'gpt-5.6-codex': { primary: { usedPercent: 20 } },
+      },
+    }))
+  })
+  const usage = await h.service.read()
+  await h.stop()
+  assert.deepEqual(Object.keys(usage.buckets), ['codex', 'gpt-5.6-codex'])
+  assert.equal(usage.buckets.codex.windows.primary.usedPercent, 10)
+})
+
+await test('both windows of a bucket are read', async () => {
+  const h = await withService((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({
+      rateLimits: {
+        primary: { usedPercent: 30, windowDurationMins: 300 },
+        secondary: { usedPercent: 70, windowDurationMins: 10080 },
+      },
+    }))
+  })
+  const usage = await h.service.read()
+  await h.stop()
+  assert.equal(usage.windows.primary.usedPercent, 30)
+  assert.equal(usage.windows.secondary.usedPercent, 70)
+  assert.equal(usage.windows.secondary.windowMinutes, 10080)
+})
+
+await test('a refusal reason and exhaust flag survive normalization', async () => {
+  const h = await withService((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({
+      ordinaryUsageAllowed: false,
+      rateLimits: { primary: { usedPercent: 100 }, rateLimitReachedType: 'rate_limit_reached' },
+    }))
+  })
+  const usage = await h.service.read()
+  await h.stop()
+  assert.equal(usage.exhausted, true)
+  assert.equal(usage.buckets.default.reachedType, 'rate_limit_reached')
+})
+
+await test('an unlimited account is flagged so no meter is drawn', async () => {
+  const h = await withService((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ rateLimits: { primary: { usedPercent: 0 }, credits: { unlimited: true, hasCredits: true } } }))
+  })
+  const usage = await h.service.read()
+  await h.stop()
+  assert.equal(usage.buckets.default.unlimited, true)
+})
+
+await test('the request path is host-root-relative, not under the API base', async () => {
+  const seen = []
+  // The resolver returns the stub's origin with the real API base path appended,
+  // which is exactly what a user's configured baseURL looks like.
+  const server = createServer((req, res) => {
     seen.push(req.url)
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end('{"primary":{"used_percent":1}}')
+    res.end('{"rateLimits":{"primary":{"usedPercent":1}}}')
   })
-  await h.service.read()
-  await h.stop()
-  assert.deepEqual(seen, ['/usage'])
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const ctx = new Context()
+  const service = new UsageService(ctx, {
+    baseURL: () => `http://127.0.0.1:${server.address().port}/backend-api/codex`,
+    resolveCredential: async () => ({ accessToken: 't', accountId: 'a' }),
+  })
+  await service.read()
+  await new Promise((r) => server.close(r))
+  // A naive join would request `/backend-api/codex/api/codex/usage`.
+  assert.deepEqual(seen, ['/api/codex/usage'])
+})
+
+await test('originOf reduces a base URL to scheme+host', () => {
+  assert.equal(originOf('https://chatgpt.com/backend-api/codex'), 'https://chatgpt.com')
+  assert.equal(originOf('https://chatgpt.com/backend-api/codex/'), 'https://chatgpt.com')
+  assert.equal(originOf('http://127.0.0.1:8080/v1'), 'http://127.0.0.1:8080')
 })
 
 await test('a non-200 answer yields undefined, not a throw', async () => {
