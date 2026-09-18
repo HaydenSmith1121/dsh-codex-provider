@@ -1,0 +1,3 @@
+- insert:
+    - id: llm-codex
+      name: 'dsh-codex-provider'

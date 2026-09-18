@@ -1,0 +1,14 @@
+# Run the plugin from a local checkout instead of a published tarball.
+#
+# Useful while developing: `dsh plugin add <dir>` records a `link:` dependency,
+# so edits to lib/ take effect on the next harness restart without repackaging.
+
+- id: llm-codex
+  name: dsh-codex-provider
+  config:
+    # Point at a local gateway instead of the ChatGPT backend. A loopback
+    # target is never sent through HTTPS_PROXY, so this works even when a
+    # proxy is configured for the real endpoint.
+    baseURL: http://127.0.0.1:8317/v1
+    # Shorten the catalog refresh while iterating on model metadata.
+    refreshMinutes: 1

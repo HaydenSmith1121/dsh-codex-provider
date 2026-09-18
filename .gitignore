@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Local integration-test scratch
+.codex-dev-home/
+
+# Logs and coverage
+*.log
+coverage/
+
+# Editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

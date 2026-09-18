@@ -1,0 +1,31 @@
+# Default the session to a Codex model
+
+Set the harness's default model to a Codex model in the profile patch layer
+(`~/.dsh/profiles/<profile>/cordis.patch.yml`), by overriding the existing
+`agent-default-model` row:
+
+```yaml
+- id: agent-default-model
+  config:
+    provider: codex
+    model: gpt-6-astra
+```
+
+The `provider` value must match the route this plugin actually claimed. It
+prefers `codex`; if another adapter already owns that name it serves
+`codex-provider` instead and logs a warning. Confirm which one is live in the
+model selector before hard-coding it here.
+
+## Model ids
+
+The backend's own ids, as of this plugin's last live verification:
+
+- `gpt-6-astra` — 272K context, efforts `low`…`ultra`
+- `gpt-reserve`
+- `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
+- `gpt-5.5`
+- `codex-auto-review`
+
+The catalog is fetched live, so a model added by the backend appears without
+changing this file. An id the backend does not serve fails with
+`UNKNOWN_MODEL` rather than silently falling back.
