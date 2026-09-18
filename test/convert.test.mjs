@@ -332,6 +332,74 @@ test('an in-band error event ends the stream as an error', () => {
   assert.match(finish.reason.failure.message, /backend exploded/)
 })
 
+console.log('\nchunk ordering invariants')
+
+test('usage is emitted before the terminal finish and nothing follows it', () => {
+  // The StreamChunk contract states: "Adapters emit usage before the terminal
+  // finish and nothing afterward."
+  const chunks = run([
+    { type: 'response.output_text.delta', item_id: 'm', content_index: 0, delta: 'hi' },
+    { type: 'response.completed', response: { id: 'r', status: 'completed', usage: { input_tokens: 9, output_tokens: 2 } } },
+  ])
+  const usageIndex = chunks.findIndex((c) => c.type === 'usage')
+  const finishIndex = chunks.findIndex((c) => c.type === 'finish')
+  assert.ok(usageIndex >= 0, 'usage should have been emitted')
+  assert.ok(finishIndex >= 0, 'a finish should have been emitted')
+  assert.ok(usageIndex < finishIndex, 'usage must precede finish')
+  assert.equal(finishIndex, chunks.length - 1, 'nothing may follow finish')
+})
+
+test('exactly one finish chunk is emitted', () => {
+  const chunks = run([
+    { type: 'response.output_text.delta', item_id: 'm', content_index: 0, delta: 'hi' },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  assert.equal(chunks.filter((c) => c.type === 'finish').length, 1)
+})
+
+test('every delta lands inside an open block', () => {
+  // A delta whose block was never opened would be dropped by assembly, so each
+  // one must be preceded by its block-start.
+  const chunks = run([
+    { type: 'response.reasoning_summary_text.delta', item_id: 'r1', delta: 'think' },
+    { type: 'response.output_text.delta', item_id: 'm1', content_index: 0, delta: 'say' },
+    { type: 'response.function_call_arguments.delta', item_id: 'c1', delta: '{}' },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  const open = new Set()
+  for (const chunk of chunks) {
+    if (chunk.type === 'block-start') open.add(chunk.index)
+    else if (chunk.type === 'block-end') open.delete(chunk.index)
+    else if (chunk.type.endsWith('-delta')) {
+      assert.ok(open.has(chunk.index), `${chunk.type} at index ${chunk.index} has no open block`)
+    }
+  }
+  assert.equal(open.size, 0, 'every open block must be closed')
+})
+
+test('block starts, deltas and ends use one dense index space', () => {
+  const chunks = run([
+    { type: 'response.reasoning_summary_text.delta', item_id: 'r1', delta: 'think' },
+    { type: 'response.output_text.delta', item_id: 'm1', content_index: 0, delta: 'say' },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  const starts = chunks.filter((c) => c.type === 'block-start').map((c) => c.index)
+  assert.deepEqual(starts, [0, 1])
+  for (const chunk of chunks) {
+    if (chunk.index === undefined) continue
+    assert.ok(starts.includes(chunk.index), `index ${chunk.index} was used without a block-start`)
+  }
+})
+
+test('nothing is emitted after the finish even when the response is an error', () => {
+  const chunks = run([
+    { type: 'response.output_text.delta', item_id: 'm', content_index: 0, delta: 'partial' },
+    { type: 'error', error: { message: 'boom' } },
+  ])
+  assert.equal(chunks.at(-1).type, 'finish')
+  assert.equal(chunks.filter((c) => c.type === 'finish').length, 1)
+})
+
 test('unknown event types are ignored without breaking the turn', () => {
   const chunks = run([
     { type: 'response.some_future_event', payload: {} },

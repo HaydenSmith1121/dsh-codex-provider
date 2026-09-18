@@ -21,7 +21,7 @@ npm test
 ```
 auth.test.mjs          13 passed, 0 failed
 catalog.test.mjs       42 passed, 0 failed
-convert.test.mjs       56 passed, 0 failed
+convert.test.mjs       61 passed, 0 failed
 e2e.test.mjs           13 passed, 0 failed
 image.test.mjs          5 passed, 0 failed
 settings-page.test.mjs  8 passed, 0 failed
@@ -29,7 +29,7 @@ settings.test.mjs       5 passed, 0 failed
 url-join.test.mjs       6 passed, 0 failed
 usage.test.mjs         14 passed, 0 failed
 ────────────────────────────────────────
-ALL 9 TEST FILES PASSED   (162 assertions)
+ALL 9 TEST FILES PASSED   (167 assertions)
 ```
 
 ## The fallback route, and what the models page receives
@@ -199,6 +199,22 @@ An HTTP probe of the running harness was attempted and abandoned: the plugin is
 host-side and contributes no client surface, so there is no route to query. The
 check above is the honest substitute, and it is what would have caught a row that
 composed but never activated.
+
+## Chunk-ordering invariants
+
+The `StreamChunk` contract states one ordering rule outright — *"Adapters emit
+usage before the terminal finish and nothing afterward"* — and the rest is
+implied by how assembly works. Five tests now pin the whole set, because a
+violation is silent: a delta whose block was never opened is simply dropped when
+the message is assembled, and a second finish chunk would confuse the loop.
+
+- usage precedes `finish`, and `finish` is last;
+- exactly one `finish` is emitted, on the success and error paths alike;
+- **every delta falls inside an open block** — asserted by replaying the stream
+  and tracking which indexes are open;
+- block starts, deltas, and ends share one dense index space, so an index can
+  never be used without its `block-start`;
+- nothing is emitted after `finish`.
 
 ## Origin failover, found by an outage during development
 
