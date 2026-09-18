@@ -10,13 +10,20 @@
 
 Codex 的模型**不在 `api.openai.com` 上**。订阅用户的请求发往 `chatgpt.com/backend-api/codex`，它要求：
 
-| 要求 | 说明 |
-|---|---|
-| OAuth 会话凭证 | 不是 API Key，而是 `~/.codex/auth.json` 里的 access/refresh token |
-| `chatgpt-account-id` 头 | 每次请求都必须带上账号 ID |
-| `originator: codex_cli_rs` | 后端按此路由订阅流量 |
-| `OpenAI-Beta: responses=experimental` | Responses API 的实验性通道 |
-| Responses 请求体 | 不是 `chat/completions`，而是扁平的 `input` item 数组 |
+| 要求 | 说明 | 实测 |
+|---|---|---|
+| OAuth 会话凭证 | 不是 API Key，而是 `~/.codex/auth.json` 里的 access/refresh token | **必需** |
+| Responses 请求体 | 不是 `chat/completions`，而是扁平的 `input` item 数组 | **必需** |
+| `client_version` 查询参数 | `/models` 上的必填参数，缺失直接 400 | **必需** |
+| `chatgpt-account-id` 头 | 账号 ID | 该路由上非必需 |
+| `originator: codex_cli_rs` | 后端按此标识第一方客户端 | 该路由上非必需 |
+| `OpenAI-Beta` | 见下 | 该路由上非必需 |
+
+> 上表的"必需/非必需"是**逐个摘除请求头实测**得出的，不是照抄文档。插件的每条请求都带齐这些头，是为了让请求与 Codex CLI 自身发出的**完全一致** —— 后端可以在任意时刻开始校验它们，而带上正确值的成本是零。
+
+其中 `OpenAI-Beta` 用的是 `responses_websockets=2026-02-06` —— 这是**从本机 Codex CLI 二进制里读出来的实际值**，而不是公开文档写的 `responses=experimental`。两者当前都被接受，插件选前者是为了与第一方客户端保持一致。
+
+`client_version` 由插件**从本机 Codex 安装自动探测**（`models_cache.json` → 已安装的 `@openai/codex` 版本）。因为后端会校验它，写死一个字面量会随 Codex 升级静默失效。可在配置里显式覆盖。
 
 这些都无法用通用的 OpenAI 兼容 provider 表达，所以本插件自己实现适配器、传输层与协议转换。
 
@@ -157,6 +164,7 @@ llm-codex:
   refreshMinutes: 5                      # 目录刷新间隔
   streamIdleTimeoutMs: 120000            # 单次流的空闲超时
   maxRequestImageBytes: 4194304          # 单张图片编码后上限
+  clientVersion: ''                      # 空 = 从本机 Codex 安装自动探测
   catalogAdditions: []                   # 额外补充的模型条目
 ```
 

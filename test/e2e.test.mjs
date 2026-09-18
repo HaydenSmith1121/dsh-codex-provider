@@ -150,7 +150,10 @@ await test('the request carries the required Codex headers and body', async () =
   const call = s.captured.find((c) => c.url === '/responses')
   assert.equal(call.headers['chatgpt-account-id'], 'acct-test')
   assert.equal(call.headers.originator, 'codex_cli_rs')
-  assert.equal(call.headers['openai-beta'], 'responses=experimental')
+  // The value the Codex CLI itself sends; probing showed the backend accepts
+  // any value here, so this asserts compatibility with the first-party client
+  // rather than a hard requirement.
+  assert.equal(call.headers['openai-beta'], 'responses_websockets=2026-02-06')
   assert.match(call.headers.authorization, /^Bearer test-token$/)
   assert.match(call.headers['user-agent'], /codex_cli_rs/)
 

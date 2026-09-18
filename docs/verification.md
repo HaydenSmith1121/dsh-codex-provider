@@ -20,13 +20,68 @@ npm test
 
 ```
 auth.test.mjs       13 passed, 0 failed
-catalog.test.mjs    39 passed, 0 failed
+catalog.test.mjs    42 passed, 0 failed
 convert.test.mjs    39 passed, 0 failed
 e2e.test.mjs        10 passed, 0 failed
 settings.test.mjs    5 passed, 0 failed
 ─────────────────────────────────────
-ALL 5 TEST FILES PASSED   (106 assertions)
+ALL 5 TEST FILES PASSED   (109 assertions)
 ```
+
+## Header and version probing
+
+Reasoning about the wire contract from documentation was not good enough, so
+each assumption was tested against the live endpoint. `/models` does not consume
+quota, which makes it usable as a probe target while the account is rate-limited.
+
+**Which headers are load-bearing.** Each was removed in turn:
+
+```
+/models with each header removed in turn:
+
+all headers (baseline)                         OK
+- chatgpt-account-id                           OK
+- originator                                   OK
+- version                                      OK
+- OpenAI-Beta                                  OK
+- user-agent                                   OK
+- all optional headers                         OK
+
+Is client_version load-bearing on /models?
+no client_version query                        400 — missing query client_version
+
+Is the Authorization header load-bearing?
+no bearer token                                401 — missing_end_user_auth
+```
+
+Conclusions, all of which corrected an earlier assumption:
+
+- **Only `Authorization` gates the request.** The remaining headers are
+  advisory on this route.
+- **`client_version` is a required query parameter**, not optional — omitting
+  it is a hard 400.
+- **`OpenAI-Beta` is not validated.** Any value is accepted, including none.
+  The plugin sends `responses_websockets=2026-02-06` because that is what the
+  installed Codex CLI binary actually sends, so the request is
+  indistinguishable from a first-party client — not because the backend
+  requires that specific string. (An earlier revision sent
+  `responses=experimental`, the value the public Responses API documents; that
+  works too, but it is not what this backend's own client sends.)
+
+**Client version discovery.** Because `client_version` is validated, a
+hardcoded literal ages out silently across Codex upgrades. The plugin now reads
+the version from the local installation — `models_cache.json` first, then the
+installed `@openai/codex` manifest — and reports that:
+
+```
+codex home     : C:\Users\Administrator\.codex
+plugin default : 0.155.0
+discovered     : 0.155.0
+```
+
+Configuration (`llm-codex.clientVersion`) overrides discovery when set.
+Discovery is a filesystem read and happens once per catalog instance, not once
+per refresh; a test asserts that.
 
 ## Live backend checks
 
@@ -121,6 +176,12 @@ Recorded because each was caught by a test rather than by inspection:
 | 7 | Stub backend unreachable, `HTTP 0` | `HTTPS_PROXY` routed loopback through Clash | Never proxy loopback/private hosts |
 | 8 | Response status stayed `0` against a local peer | Listeners attached *after* `socket.write`; a fast peer answered in the same tick | Attach listeners before writing |
 | 9 | Raw `ECONNREFUSED` reached the harness untyped | Socket errors not wrapped | Wrap connect and TLS failures in typed `LlmError`s |
+| 10 | `client_version` hardcoded to a stale literal | Assumed optional; probing showed a 400 when absent | Discover the version from the local Codex install, overridable by config |
+| 11 | Cancelling a stream hung for the full 120s idle timeout | The abort listener was detached once the socket connected, so an abort arriving mid-stream never reached it | Keep the listener for the whole request; detach only when the exchange finishes |
+
+Items 10 and 11 were found by probing and by a test that started failing for the
+right reason — not by inspection.
+
 
 ## Reproducing
 

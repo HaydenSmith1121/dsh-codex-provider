@@ -3,6 +3,7 @@
 import { strict as assert } from 'node:assert'
 import { createServer } from 'node:http'
 import { CodexCatalog, normalizeCatalog, normalizeModel, prettifyModelName, reasoningInfo } from '../lib/catalog.js'
+import { DEFAULT_CLIENT_VERSION } from '../lib/transport.js'
 import { CodexAdapter, DISPLAY_NAME, PROVIDER_ID, FALLBACK_PROVIDER_ID } from '../lib/adapter.js'
 import { assertBaseURL, Config } from '../lib/config.js'
 import { normalizeUsage, normalizeWindow } from '../lib/usage.js'
@@ -195,6 +196,21 @@ async function stub(handler) {
   return { baseURL: `http://127.0.0.1:${port}`, stop: () => new Promise((r) => server.close(r)) }
 }
 
+/**
+ * Build a catalog pointed at a stub backend.
+ * @param baseURL - stub origin.
+ * @param options - optional version overrides.
+ * @returns a catalog whose fetches hit the stub.
+ */
+function catalogAgainst(baseURL, options = {}) {
+  return new CodexCatalog({
+    baseURL,
+    resolveCredential: async () => ({ accessToken: 't', accountId: 'a' }),
+    clientVersion: options.clientVersion,
+    discoverVersion: options.discoverVersion,
+  })
+}
+
 const catalogBody = JSON.stringify({
   models: [
     { slug: 'gpt-6-astra', display_name: 'GPT-6-Astra', context_window: 272000, input_modalities: ['text', 'image'], supported_reasoning_levels: [{ effort: 'low' }, { effort: 'ultra' }] },
@@ -203,15 +219,65 @@ const catalogBody = JSON.stringify({
 })
 
 await test('a live listing replaces the fallback table', async () => {
+  // Build the catalog against the stub so nothing touches the network.
   const s = await stub((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(catalogBody)
   })
-  const catalog = new CodexCatalog({ resolveCredential: async () => ({ accessToken: 't', accountId: 'a' }) })
-  // Point the request at the stub by overriding the transport's base URL.
-  const snapshot = await catalog.snapshot()
-  assert.ok(snapshot.models.size > 0)
+  const snapshot = await catalogAgainst(s.baseURL).snapshot()
+  assert.equal(snapshot.live, true)
+  assert.deepEqual([...snapshot.models.keys()], ['gpt-6-astra', 'gpt-5.5'])
   await s.stop()
+})
+
+await test('the catalog sends a client_version the backend requires', async () => {
+  let seenUrl
+  const s = await stub((req, res) => {
+    seenUrl = req.url
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(catalogBody)
+  })
+  await catalogAgainst(s.baseURL, { clientVersion: () => '9.9.9' }).snapshot()
+  await s.stop()
+  assert.match(seenUrl, /client_version=9\.9\.9/)
+})
+
+await test('a discovered version is used when configuration names none', async () => {
+  let seenUrl
+  const s = await stub((req, res) => {
+    seenUrl = req.url
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(catalogBody)
+  })
+  let discoveries = 0
+  const catalog = catalogAgainst(s.baseURL, {
+    clientVersion: () => '',
+    discoverVersion: async () => {
+      discoveries++
+      return '8.8.8'
+    },
+  })
+  await catalog.snapshot()
+  await catalog.snapshot({ force: true })
+  await s.stop()
+  assert.match(seenUrl, /client_version=8\.8\.8/)
+  // Discovery is a filesystem read; it must happen once, not per refresh.
+  assert.equal(discoveries, 1)
+})
+
+await test('the literal default is used when discovery finds nothing', async () => {
+  let seenUrl
+  const s = await stub((req, res) => {
+    seenUrl = req.url
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(catalogBody)
+  })
+  await catalogAgainst(s.baseURL, {
+    clientVersion: () => '',
+    discoverVersion: async () => undefined,
+  }).snapshot()
+  await s.stop()
+  assert.match(seenUrl, new RegExp(`client_version=${DEFAULT_CLIENT_VERSION.replace(/\./g, '\\.')}`))
 })
 
 await test('a failed listing falls back to the curated table', async () => {
