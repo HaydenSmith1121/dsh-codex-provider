@@ -503,5 +503,67 @@ test('mixed spellings within one stream still produce one block per item', () =>
   assert.equal(chunks.filter((c) => c.type === 'block-start').length, 2)
 })
 
+console.log('\nauthoritative wire shapes (from generated TypeScript bindings)')
+
+test('a reasoning item summary of {type,text} objects is read', () => {
+  // ResponseItem defines summary as Array<ReasoningItemReasoningSummary>,
+  // i.e. [{ type: 'summary_text', text }] — not bare strings.
+  const chunks = run([
+    {
+      type: 'response.output_item.done',
+      output_index: 0,
+      item: {
+        type: 'reasoning',
+        id: 'rs_1',
+        summary: [{ type: 'summary_text', text: 'first' }, { type: 'summary_text', text: 'second' }],
+        encrypted_content: null,
+      },
+    },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  const block = chunks.find((c) => c.type === 'block-end' && c.block.type === 'reasoning')
+  assert.equal(block.block.text, 'firstsecond')
+})
+
+test('a reasoning item summary of bare strings is also read', () => {
+  // ThreadItem's v2 view types summary as Array<string>, so both must work.
+  const chunks = run([
+    { type: 'response.output_item.done', output_index: 0, item: { type: 'reasoning', id: 'rs_1', summary: ['a', 'b'] } },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  const block = chunks.find((c) => c.type === 'block-end' && c.block.type === 'reasoning')
+  assert.equal(block.block.text, 'ab')
+})
+
+test('a function_call item read from the wire carries call_id and arguments', () => {
+  // ResponseItem: { type: 'function_call', name, arguments: string, call_id }
+  const chunks = run([
+    {
+      type: 'response.output_item.done',
+      output_index: 0,
+      item: { type: 'function_call', id: 'fc_1', name: 'read', arguments: '{"path":"a"}', call_id: 'call_9' },
+    },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  const call = chunks.find((c) => c.type === 'block-end' && c.block.type === 'tool-call')
+  assert.equal(call.block.id, 'call_9')
+  assert.equal(call.block.name, 'read')
+  assert.equal(call.block.arguments, '{"path":"a"}')
+})
+
+test('a message item content of output_text parts is read', () => {
+  // ContentItem: { type: 'output_text', text }
+  const chunks = run([
+    {
+      type: 'response.output_item.done',
+      output_index: 0,
+      item: { type: 'message', id: 'm1', role: 'assistant', content: [{ type: 'output_text', text: 'hi there' }] },
+    },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  const block = chunks.find((c) => c.type === 'block-end' && c.block.type === 'text')
+  assert.equal(block.block.text, 'hi there')
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed === 0 ? 0 : 1)

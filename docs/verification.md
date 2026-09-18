@@ -21,7 +21,7 @@ npm test
 ```
 auth.test.mjs          13 passed, 0 failed
 catalog.test.mjs       42 passed, 0 failed
-convert.test.mjs       52 passed, 0 failed
+convert.test.mjs       56 passed, 0 failed
 e2e.test.mjs           13 passed, 0 failed
 image.test.mjs          5 passed, 0 failed
 settings-page.test.mjs  8 passed, 0 failed
@@ -29,7 +29,7 @@ settings.test.mjs       5 passed, 0 failed
 url-join.test.mjs       6 passed, 0 failed
 usage.test.mjs         14 passed, 0 failed
 ────────────────────────────────────────
-ALL 9 TEST FILES PASSED   (158 assertions)
+ALL 9 TEST FILES PASSED   (162 assertions)
 ```
 
 ## The fallback route, and what the models page receives
@@ -111,46 +111,53 @@ implements, where cached input is subtracted out of the input total. The
 schemas likewise confirm that reasoning arrives on its own channel, which is how
 the translator treats it.
 
-**2. The streaming event vocabulary and key spelling.** Partially resolved
-without a live turn, by reading the shipped client — and it surfaced a second
-silent-failure risk.
+**2. The streaming event vocabulary and key spelling.** RESOLVED, without a
+live turn — by generating the client's own TypeScript bindings.
 
-The app-server's published schemas spell every field **camelCase**:
-
-```
-ReasoningTextDeltaNotification: { contentIndex, delta, itemId, threadId, turnId }
-AgentMessageDeltaNotification:  { delta, itemId, threadId, turnId }
+```sh
+codex app-server generate-ts --out <dir> --experimental
 ```
 
-The translator keyed blocks off **snake_case** (`item_id`, `content_index`). Both
-spellings are present in the client binary — the snake_case ones alongside
-`RealtimeVoice` / `sample_rate` fields, the camelCase ones adjacent to the
-app-server's own serde struct definitions (`struct PlanDeltaNotification with 4
-elements` immediately follows `itemId delta`).
+The JSON Schema export describes the app-server API and deliberately does not
+expose the upstream Responses wire (`response.output_text.delta` appears zero
+times in all 312 schema files). The **TypeScript** export is richer and includes
+the wire-shaped types:
 
-The two layers need not agree: the app-server protocol is Codex's internal API,
-while this plugin consumes the upstream Responses wire. Which convention that
-wire uses could not be confirmed, and **getting it wrong is silent** — every
-block would key off `undefined`, so an entire turn's output would collapse into
-one block instead of failing loudly.
+```ts
+// ResponseItem.ts — snake_case throughout
+{ "type": "function_call", name, arguments: string, call_id: string }
+{ "type": "reasoning", summary: Array<ReasoningItemReasoningSummary>, ... }
+{ "type": "message", role, content: Array<ContentItem> }
 
-The translator now reads every field under **either** spelling via a `field()`
-helper, with `itemKey` / `itemKeyOf` / `contentKey` / `callKey` wrapping it.
-Five tests cover it, including that a camelCase stream produces one block per
-item rather than one for the whole turn, and that mixed spellings within a single
-stream still behave.
+// ReasoningItemReasoningSummary.ts
+{ "type": "summary_text", text: string }
 
-The same schema read corroborated last round's correction: `struct
-RateLimitWindow` is defined with exactly `usedPercent`, `windowDurationMins`,
-`resetsAt`.
+// ContentItem.ts
+{ "type": "input_text", text } | { "type": "input_image", image_url }
+  | { "type": "output_text", text }
+```
 
-**What is still not confirmed:** the exact set of event *names* the wire emits.
-`response.output_text.delta` reads as absent from the client's packed string
-table under some extraction methods and present under others — four attempts
-gave four answers, so the method is unreliable and no conclusion is drawn from
-it. Shape-based dispatch remains the defence, and it is now paired with
-key-spelling tolerance, so a wrong guess about either degrades rather than
-silently emptying the turn.
+This confirms the implementation that was already there: the wire is
+**snake_case** (`call_id`, `item_id`), reasoning summaries are objects carrying
+`.text`, and message content is the `input_text` / `input_image` / `output_text`
+trio exactly as `convert.js` builds and reads it. The `{ type: "summary_text",
+text }` shape is why the translator's `typeof part === 'string' ? part :
+part?.text` fallback matters — both forms are now handled.
+
+It also explains the camelCase sightings: those belong to the **app-server
+protocol** layer (`ReasoningSummaryTextDeltaNotification` is
+`{ threadId, turnId, itemId, delta, summaryIndex }`), which is Codex's internal
+API, not the wire this plugin speaks. The previous round's key-spelling
+tolerance was therefore not fixing a live bug — the snake_case assumption was
+already correct — but it is cheap insurance against the wire changing, and it is
+now backed by evidence rather than by doubt.
+
+An earlier claim in this file — that `response.output_text.delta` was absent from
+the client — came from the packed string table, whose extraction is unreliable.
+It is worth noting the schema export agrees it is absent **there**, while the
+TypeScript bindings define the wire item shapes it would produce. Neither
+establishes the exact event *name* list, which remains the one unconfirmed
+detail, covered by shape-based dispatch.
 
 ## Isolated-harness installation, re-run against the finished code
 
