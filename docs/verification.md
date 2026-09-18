@@ -23,10 +23,52 @@ auth.test.mjs       13 passed, 0 failed
 catalog.test.mjs    42 passed, 0 failed
 convert.test.mjs    47 passed, 0 failed
 e2e.test.mjs        13 passed, 0 failed
+image.test.mjs       5 passed, 0 failed
 settings.test.mjs    5 passed, 0 failed
 ─────────────────────────────────────
-ALL 5 TEST FILES PASSED   (120 assertions)
+ALL 6 TEST FILES PASSED   (125 assertions)
 ```
+
+## Isolated-harness installation, re-run against the finished code
+
+The install-and-boot check was first done early, before the plugin gained origin
+failover, version discovery, and settings handling — so it was re-run against
+the current code on a **fresh** `DSH_HOME`:
+
+```sh
+DSH_HOME=<scratch> dsh plugin --profile web add <package>
+DSH_HOME=<scratch> dsh web --port 3097 --no-open
+```
+
+- `dsh.profile.bundles` gained `dsh-codex-provider`.
+- `dsh --dump-config --profile web` ends with:
+
+  ```yaml
+  # == dsh-codex-provider
+  - id: llm-codex
+    name: dsh-codex-provider
+  ```
+
+- `dsh web` booted to a printed URL with **no plugin-tree error** and stayed up.
+
+The composed config proves the row was *composed*; it does not prove the plugin
+*activated*. `test/verify-activation.mjs` covers that by composing the plugin the
+way the loader does, against the real `LlmRuntime` and a real settings provider:
+
+```
+route           : codex="Codex (ChatGPT)"
+configurable    : codex ns=llm-codex
+settings ns     : llm-codex
+[live catalog]  : gpt-6-astra, gpt-reserve, gpt-5.6-sol, gpt-5.6-terra,
+                  gpt-5.6-luna, gpt-5.5, codex-auto-review
+context         : 272000 | efforts: low/medium/high/xhigh/max/ultra
+settings write  : refreshMinutes 9 accepted
+```
+
+An HTTP probe of the running harness was attempted and abandoned: the plugin is
+host-side and contributes no client surface, so there is no route to query. The
+check above is the honest substitute, and it is what would have caught a row that
+composed but never activated.
 
 ## Origin failover, found by an outage during development
 
@@ -278,6 +320,7 @@ Recorded because each was caught by a test rather than by inspection:
 | 12 | A tool call assembled purely from deltas was reported as `EMPTY_RESPONSE` | The shape-based fallback did not set `#sawToolCall` | Set it when a tool-call delta is opened |
 | 13 | A transient `chatgpt.com` outage took the whole route down | The transport had a single hardcoded origin | Fail over between the two built-in origins, transport failures only |
 | 14 | Failover redirected a user's **custom** `baseURL` to OpenAI's endpoint | Failover was applied to every origin | Restrict it to the built-in origin set, so a self-hosted gateway is never bypassed |
+| 15 | A throwing attachment service failed the whole turn | `projectImages` awaited the resolver without a guard | Degrade that one image to a placeholder instead of losing the turn |
 
 Items 10 and 11 were found by probing and by a test that started failing for the
 right reason — not by inspection. Item 12 came out of writing tests for the
