@@ -445,5 +445,63 @@ test('the fallback does not double-count an event the exact match handled', () =
   assert.equal(text, 'once')
 })
 
+console.log('\ncamelCase key spelling')
+
+test('a camelCase text stream is keyed identically to a snake_case one', () => {
+  // The shipped client contains both spellings, so both must work. Getting this
+  // wrong is silent: every block would key off `undefined` and the whole turn
+  // would collapse into one block.
+  const camel = run([
+    { type: 'response.output_text.delta', itemId: 'm1', contentIndex: 0, delta: 'a' },
+    { type: 'response.output_text.delta', itemId: 'm2', contentIndex: 0, delta: 'b' },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  const starts = camel.filter((c) => c.type === 'block-start')
+  assert.equal(starts.length, 2, 'two items must produce two blocks, not one')
+  assert.notEqual(starts[0].index, starts[1].index)
+})
+
+test('camelCase contentIndex separates parts of one item', () => {
+  const chunks = run([
+    { type: 'response.output_text.delta', itemId: 'm1', contentIndex: 0, delta: 'first' },
+    { type: 'response.output_text.delta', itemId: 'm1', contentIndex: 1, delta: 'second' },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  assert.equal(chunks.filter((c) => c.type === 'block-start').length, 2)
+})
+
+test('a camelCase item done event closes the block it identifies', () => {
+  const chunks = run([
+    { type: 'response.output_item.done', outputIndex: 0, item: { type: 'message', id: 'm1', content: [{ type: 'output_text', text: 'full' }] } },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  const end = chunks.find((c) => c.type === 'block-end' && c.block.type === 'text')
+  assert.equal(end.block.text, 'full')
+})
+
+test('a camelCase function call stream still finishes as tool-calls', () => {
+  const chunks = run([
+    { type: 'response.output_item.added', outputIndex: 0, item: { type: 'function_call', id: 'fc1', callId: 'call_x', name: 'read' } },
+    { type: 'response.function_call_arguments.delta', itemId: 'fc1', delta: '{"p":1}' },
+    { type: 'response.output_item.done', outputIndex: 0, item: { type: 'function_call', id: 'fc1', callId: 'call_x', name: 'read', arguments: '{"p":1}' } },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  const call = chunks.find((c) => c.type === 'block-end' && c.block.type === 'tool-call')
+  assert.equal(call.block.id, 'call_x')
+  assert.equal(call.block.arguments, '{"p":1}')
+  assert.deepEqual(chunks.at(-1).reason, { kind: 'tool-calls' })
+})
+
+test('mixed spellings within one stream still produce one block per item', () => {
+  const chunks = run([
+    { type: 'response.output_text.delta', item_id: 'm1', content_index: 0, delta: 'snake' },
+    { type: 'response.output_text.delta', itemId: 'm2', contentIndex: 0, delta: 'camel' },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  const text = chunks.filter((c) => c.type === 'text-delta').map((c) => c.text).join('')
+  assert.equal(text, 'snakecamel')
+  assert.equal(chunks.filter((c) => c.type === 'block-start').length, 2)
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed === 0 ? 0 : 1)

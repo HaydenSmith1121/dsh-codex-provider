@@ -21,15 +21,15 @@ npm test
 ```
 auth.test.mjs          13 passed, 0 failed
 catalog.test.mjs       42 passed, 0 failed
-convert.test.mjs       47 passed, 0 failed
+convert.test.mjs       52 passed, 0 failed
 e2e.test.mjs           13 passed, 0 failed
 image.test.mjs          5 passed, 0 failed
 settings-page.test.mjs  8 passed, 0 failed
 settings.test.mjs       5 passed, 0 failed
 url-join.test.mjs       6 passed, 0 failed
-usage.test.mjs          8 passed, 0 failed
+usage.test.mjs         14 passed, 0 failed
 ────────────────────────────────────────
-ALL 9 TEST FILES PASSED   (147 assertions)
+ALL 9 TEST FILES PASSED   (158 assertions)
 ```
 
 ## The fallback route, and what the models page receives
@@ -111,7 +111,46 @@ implements, where cached input is subtracted out of the input total. The
 schemas likewise confirm that reasoning arrives on its own channel, which is how
 the translator treats it.
 
-**2. The streaming event vocabulary.** See the dedicated section below.
+**2. The streaming event vocabulary and key spelling.** Partially resolved
+without a live turn, by reading the shipped client — and it surfaced a second
+silent-failure risk.
+
+The app-server's published schemas spell every field **camelCase**:
+
+```
+ReasoningTextDeltaNotification: { contentIndex, delta, itemId, threadId, turnId }
+AgentMessageDeltaNotification:  { delta, itemId, threadId, turnId }
+```
+
+The translator keyed blocks off **snake_case** (`item_id`, `content_index`). Both
+spellings are present in the client binary — the snake_case ones alongside
+`RealtimeVoice` / `sample_rate` fields, the camelCase ones adjacent to the
+app-server's own serde struct definitions (`struct PlanDeltaNotification with 4
+elements` immediately follows `itemId delta`).
+
+The two layers need not agree: the app-server protocol is Codex's internal API,
+while this plugin consumes the upstream Responses wire. Which convention that
+wire uses could not be confirmed, and **getting it wrong is silent** — every
+block would key off `undefined`, so an entire turn's output would collapse into
+one block instead of failing loudly.
+
+The translator now reads every field under **either** spelling via a `field()`
+helper, with `itemKey` / `itemKeyOf` / `contentKey` / `callKey` wrapping it.
+Five tests cover it, including that a camelCase stream produces one block per
+item rather than one for the whole turn, and that mixed spellings within a single
+stream still behave.
+
+The same schema read corroborated last round's correction: `struct
+RateLimitWindow` is defined with exactly `usedPercent`, `windowDurationMins`,
+`resetsAt`.
+
+**What is still not confirmed:** the exact set of event *names* the wire emits.
+`response.output_text.delta` reads as absent from the client's packed string
+table under some extraction methods and present under others — four attempts
+gave four answers, so the method is unreliable and no conclusion is drawn from
+it. Shape-based dispatch remains the defence, and it is now paired with
+key-spelling tolerance, so a wrong guess about either degrades rather than
+silently emptying the turn.
 
 ## Isolated-harness installation, re-run against the finished code
 
@@ -407,6 +446,7 @@ Recorded because each was caught by a test rather than by inspection:
 | 15 | A throwing attachment service failed the whole turn | `projectImages` awaited the resolver without a guard | Degrade that one image to a placeholder instead of losing the turn |
 | 16 | **Every field of the usage payload was wrong** | Guessed `used_percent`/`resets_at`/`window_minutes` at the top level; the real contract is `usedPercent`/`resetsAt`(Unix seconds)/`windowDurationMins` nested under `rateLimits` | Rewrote against the CLI's published JSON Schema |
 | 17 | The usage path was `/usage` | Guessed from other providers; the CLI binary references `/api/codex/usage` | Corrected, and resolved against the URL origin rather than the API base |
+| 18 | **Block identity keyed off snake_case only** | The shipped client uses camelCase under its app-server protocol and snake_case elsewhere; which the upstream wire uses is unconfirmed, and a wrong guess collapses a turn into one block | Read every field under either spelling |
 
 Items 10 and 11 were found by probing and by a test that started failing for the
 right reason — not by inspection. Item 12 came out of writing tests for the
