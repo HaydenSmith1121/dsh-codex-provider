@@ -33,7 +33,7 @@ ALL 5 TEST FILES PASSED   (106 assertions)
 `node test/live-transport.mjs`
 
 ```
-auth   : resolved (account 7fc29b03-...)
+auth   : resolved (account <redacted>)
 proxy  : {"host":"127.0.0.1","port":7897}
 /models status: 200
 models: gpt-6-astra, gpt-reserve, gpt-5.6-sol, gpt-5.6-terra,
