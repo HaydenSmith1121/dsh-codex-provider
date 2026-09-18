@@ -366,5 +366,84 @@ test('block indexes are allocated densely from zero', () => {
   assert.deepEqual(indexes, [0, 1, 2])
 })
 
+console.log('\nshape-based fallback for unrecognized event names')
+
+test('a renamed text-delta event still produces a text block', () => {
+  const chunks = run([
+    { type: 'response.some_future_text_event.delta', item_id: 'm', content_index: 0, delta: 'hello' },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  const text = chunks.filter((c) => c.type === 'text-delta').map((c) => c.text).join('')
+  assert.equal(text, 'hello')
+  assert.deepEqual(chunks.at(-1).reason, { kind: 'stop' })
+  assert.equal(chunks.find((c) => c.type === 'block-start').blockType, 'text')
+})
+
+test('a renamed reasoning-delta event still produces a reasoning block', () => {
+  const chunks = run([
+    { type: 'response.experimental_thinking.delta', item_id: 'r1', delta: 'hmm' },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  const reasoning = chunks.filter((c) => c.type === 'reasoning-delta').map((c) => c.text).join('')
+  assert.equal(reasoning, 'hmm')
+  assert.equal(chunks.find((c) => c.type === 'block-start').blockType, 'reasoning')
+})
+
+test('a renamed tool-argument delta still produces a tool-call block', () => {
+  const chunks = run([
+    { type: 'response.some_tool_call_arguments.delta', item_id: 'fc1', delta: '{"a":1}' },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  const call = chunks.find((c) => c.type === 'block-end' && c.block.type === 'tool-call')
+  assert.equal(call.block.arguments, '{"a":1}')
+  assert.deepEqual(chunks.at(-1).reason, { kind: 'tool-calls' })
+})
+
+test('an unrecognized event carrying a completed response still terminates', () => {
+  const chunks = run([
+    { type: 'response.output_text.delta', item_id: 'm', content_index: 0, delta: 'done' },
+    { type: 'response.some_new_terminal_event', response: { id: 'r', status: 'completed' } },
+  ])
+  assert.deepEqual(chunks.at(-1).reason, { kind: 'stop' })
+})
+
+test('an unrecognized event carrying an error surfaces the failure', () => {
+  const chunks = run([
+    { type: 'response.output_text.delta', item_id: 'm', content_index: 0, delta: 'partial' },
+    { type: 'response.weird_failure', error: { message: 'backend exploded', status: 503 } },
+  ])
+  const finish = chunks.at(-1)
+  assert.equal(finish.reason.kind, 'error')
+  assert.match(finish.reason.failure.message, /backend exploded/)
+})
+
+test('an unrecognized event carrying a whole message yields its text', () => {
+  const chunks = run([
+    { type: 'response.unexpected_item_event', output_index: 0, item: { type: 'message', id: 'm1', content: [{ type: 'output_text', text: 'full text' }] } },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  const end = chunks.find((c) => c.type === 'block-end' && c.block.type === 'text')
+  assert.equal(end.block.text, 'full text')
+})
+
+test('a genuinely inert unknown event is still ignored', () => {
+  const chunks = run([
+    { type: 'response.some_telemetry_ping', payload: { whatever: true } },
+    { type: 'response.output_text.delta', item_id: 'm', content_index: 0, delta: 'ok' },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  assert.equal(chunks.filter((c) => c.type === 'block-start').length, 1)
+  assert.deepEqual(chunks.at(-1).reason, { kind: 'stop' })
+})
+
+test('the fallback does not double-count an event the exact match handled', () => {
+  const chunks = run([
+    { type: 'response.output_text.delta', item_id: 'm', content_index: 0, delta: 'once' },
+    { type: 'response.completed', response: { id: 'r', status: 'completed' } },
+  ])
+  const text = chunks.filter((c) => c.type === 'text-delta').map((c) => c.text).join('')
+  assert.equal(text, 'once')
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed === 0 ? 0 : 1)

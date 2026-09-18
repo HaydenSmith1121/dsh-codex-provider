@@ -21,12 +21,67 @@ npm test
 ```
 auth.test.mjs       13 passed, 0 failed
 catalog.test.mjs    42 passed, 0 failed
-convert.test.mjs    39 passed, 0 failed
+convert.test.mjs    47 passed, 0 failed
 e2e.test.mjs        10 passed, 0 failed
 settings.test.mjs    5 passed, 0 failed
 ─────────────────────────────────────
-ALL 5 TEST FILES PASSED   (109 assertions)
+ALL 5 TEST FILES PASSED   (117 assertions)
 ```
+
+## The one thing still unverified, and what was done about it
+
+The streaming event vocabulary is the only part of the contract that could not
+be confirmed against a successful live turn — the subscription was rate-limited
+for the entire development window.
+
+Three approaches were attempted:
+
+1. **Wait for quota.** The backend reported a reset ~26 hours out
+   (`resets_in_seconds` ≈ 91,000 throughout). The Codex CLI independently
+   confirms the same wall, reporting *"try again at Sep 19th, 2026 6:19 PM"* —
+   so this is the account's own accounting, not a plugin defect.
+
+2. **Capture the wire directly.** `test/capture-sse.mjs` runs the plugin's own
+   transport against the real endpoint and dumps every frame. While the account
+   is limited the backend answers with a JSON error before any SSE frame, so
+   nothing was captured. This script is the first thing to run once quota
+   resets.
+
+3. **Read the Codex CLI binary.** The client parses the same stream, so its
+   string table should list the event names. This produced **contradictory
+   readings across successive attempts** and was abandoned as unreliable:
+
+   - A plain substring search reported `response.output_text.delta` absent.
+   - Dumping the raw neighbourhood of `output_text` showed
+     `...output_text.done...` and `...output_text.delta...` both present,
+     because Rust packs literals with non-printable separators and glues
+     adjacent literals together.
+   - A separator-tolerant matcher then reported *every* name absent, because
+     the gap between fragments exceeds any safe cap.
+   - Reassembling by suffix produced yet another answer.
+
+   The honest conclusion is that **binary archaeology cannot settle this**, and
+   the earlier claim in this repository that the CLI "does not parse a
+   text-delta event" was a false negative that has been removed. No code was
+   changed on the strength of it.
+
+**What was done instead**, since the uncertainty itself is the risk: the
+translator no longer depends on exact event names. Exact names are still
+handled precisely, and anything unrecognized is dispatched by **shape** — an
+event carrying a string `delta` is classified by whether its name mentions
+reasoning, arguments, or text; an event carrying a `response` object with a
+terminal status ends the turn; an event carrying an `error` surfaces it; an
+event carrying a full `item.message` yields its text.
+
+That converts an unknown-vocabulary failure from *"the turn silently comes back
+empty"* into *"the turn works, possibly with slightly worse attribution."*
+Eight tests cover the fallback, including that a genuinely inert unknown event
+is still ignored and that an exact-matched event is not double-counted.
+
+A real bug surfaced while writing those tests: a tool call assembled purely from
+deltas did not set the "saw a tool call" flag, so such a turn was reported as
+`EMPTY_RESPONSE`. This is the same defect class as item 1 in the bug table
+below, in a different code path, and it is now fixed and covered.
 
 ## Header and version probing
 
@@ -178,9 +233,11 @@ Recorded because each was caught by a test rather than by inspection:
 | 9 | Raw `ECONNREFUSED` reached the harness untyped | Socket errors not wrapped | Wrap connect and TLS failures in typed `LlmError`s |
 | 10 | `client_version` hardcoded to a stale literal | Assumed optional; probing showed a 400 when absent | Discover the version from the local Codex install, overridable by config |
 | 11 | Cancelling a stream hung for the full 120s idle timeout | The abort listener was detached once the socket connected, so an abort arriving mid-stream never reached it | Keep the listener for the whole request; detach only when the exchange finishes |
+| 12 | A tool call assembled purely from deltas was reported as `EMPTY_RESPONSE` | The shape-based fallback did not set `#sawToolCall` | Set it when a tool-call delta is opened |
 
 Items 10 and 11 were found by probing and by a test that started failing for the
-right reason — not by inspection.
+right reason — not by inspection. Item 12 came out of writing tests for the
+fallback, which is the point of writing them.
 
 
 ## Reproducing
