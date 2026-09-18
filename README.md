@@ -93,6 +93,22 @@ export HTTPS_PROXY=http://127.0.0.1:7897
 
 > 不使用 Node 全局 `fetch`：它不认 `HTTPS_PROXY`，且在 DNS 被污染时解析到错误地址。因此每一条请求都走插件自己的传输层。
 
+### 源站容灾
+
+Codex 后端有两个等价源站（Codex CLI 自己也把两者当同一套 API）：
+
+```
+https://chatgpt.com/backend-api/codex      ← 默认
+https://chat.openai.com/backend-api/codex  ← 备用
+```
+
+开发期间实测遇到 `chatgpt.com` 的 TLS 握手失败（curl、裸 Node、插件三处表现一致，是网络侧问题），因此插件在主源站**连接层失败**时会自动改试备用源站，并在日志里说明。
+
+两条边界：
+
+- **只对连接失败（`TRANSPORT` / `TIMEOUT`）容灾。** 后端返回的业务状态（如额度耗尽 429）是真实答复，换源站重试只会在恢复遥遥无期的情况下多烧请求。
+- **只有内置源站之间会容灾。** 如果你把 `baseURL` 指向自建网关或中转，插件**只连你指定的那一个** —— 把流量悄悄转去 OpenAI 的端点既意外又等于泄露提示词。
+
 ---
 
 ## 模型

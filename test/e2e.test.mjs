@@ -6,6 +6,7 @@
 import { strict as assert } from 'node:assert'
 import { createServer } from 'node:http'
 import { CodexAdapter, PROVIDER_ID } from '../lib/adapter.js'
+import { codexRequest } from '../lib/transport.js'
 import { Config } from '../lib/config.js'
 
 let passed = 0
@@ -303,6 +304,64 @@ await test('an empty completion is reported as a retryable failure', async () =>
   const finish = chunks.at(-1)
   assert.equal(finish.reason.kind, 'error')
   assert.equal(finish.reason.failure.code, 'EMPTY_RESPONSE')
+})
+
+console.log('\norigin failover')
+
+await test('a custom baseURL is never redirected to a built-in origin', async () => {
+  const failovers = []
+  // A user pointing at a self-hosted gateway means exactly that host. Silently
+  // redirecting their traffic to OpenAI's endpoint would leak prompts, so a
+  // custom origin must fail on its own rather than fall through.
+  await assert.rejects(
+    () => codexRequest({
+      baseURL: 'http://127.0.0.1:1',
+      path: '/models',
+      method: 'GET',
+      accessToken: 't',
+      accountId: 'a',
+      timeoutMs: 5_000,
+      onOriginFailover: (origin) => failovers.push(origin),
+    }),
+    (e) => e.code === 'TRANSPORT' || e.code === 'TIMEOUT',
+  )
+  assert.deepEqual(failovers, [])
+})
+
+await test('a provider status is never treated as failover-eligible', async () => {
+  const s = await stub({
+    '/models': (req, res) => {
+      res.writeHead(429, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: { type: 'usage_limit_reached', resets_in_seconds: 60 } }))
+    },
+  })
+  const failovers = []
+  // A quota answer is the endpoint's real reply; retrying it on another origin
+  // would burn a request per origin for an allowance that resets hours later.
+  const res = await codexRequest({
+    baseURL: s.baseURL,
+    path: '/models',
+    method: 'GET',
+    accessToken: 't',
+    accountId: 'a',
+    timeoutMs: 10_000,
+    onOriginFailover: (origin) => failovers.push(origin),
+  })
+  await s.stop()
+  assert.equal(res.status, 429)
+  assert.deepEqual(failovers, [])
+})
+
+await test('the built-in origin set is what failover moves between', async () => {
+  const { DEFAULT_BASE_URL: primary, ALTERNATE_BASE_URLS: alternates } = await import('../lib/transport.js')
+  assert.ok(alternates.length >= 1, 'expected at least one alternate origin')
+  assert.ok(!alternates.includes(primary), 'an alternate must not be the primary')
+  // Every alternate must be a distinct, absolute https origin.
+  for (const url of alternates) {
+    const parsed = new URL(url)
+    assert.equal(parsed.protocol, 'https:')
+    assert.ok(url.endsWith('/backend-api/codex'), `${url} must point at the same API path`)
+  }
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

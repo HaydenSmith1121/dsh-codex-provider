@@ -22,11 +22,53 @@ npm test
 auth.test.mjs       13 passed, 0 failed
 catalog.test.mjs    42 passed, 0 failed
 convert.test.mjs    47 passed, 0 failed
-e2e.test.mjs        10 passed, 0 failed
+e2e.test.mjs        13 passed, 0 failed
 settings.test.mjs    5 passed, 0 failed
 ─────────────────────────────────────
-ALL 5 TEST FILES PASSED   (117 assertions)
+ALL 5 TEST FILES PASSED   (120 assertions)
 ```
+
+## Origin failover, found by an outage during development
+
+Mid-development, `chatgpt.com` began failing its TLS handshake:
+
+```
+GET /models -> TRANSPORT: TLS handshake with chatgpt.com:443 failed
+               (Client network socket disconnected before secure TLS connection was established)
+```
+
+**It was not the plugin.** Established by isolating each layer:
+
+| Check | Result |
+|---|---|
+| `curl -x <proxy> https://github.com` | 200 |
+| `curl https://www.google.com` (direct) | 200 |
+| `curl -x <proxy> https://chatgpt.com` | exit 35 (schannel: failed to receive handshake) |
+| `curl -x <proxy> https://chat.openai.com` | 308 |
+| Bare Node CONNECT + TLS to chatgpt.com, **no plugin code** | same failure |
+| Plugin transport to `chat.openai.com` | 308 — full CONNECT + TLS + HTTP/1.1 framing |
+
+The tunnel established (`HTTP/1.1 200 Connection established`) and then the TLS
+handshake died — identically in curl, in raw Node, and in the plugin. The route
+to that one host was down. It recovered on its own minutes later and `/models`
+returned 200 again.
+
+The outage exposed a real robustness gap: the transport had a single hardcoded
+origin. The Codex CLI treats two origins as interchangeable for this API —
+readable from its own string table as `https://chatgpt.com/backend-api/codex`
+**and** `https://chat.openai.com/backend-api/codex` — so one host being
+unreachable need not take the route down.
+
+`codexRequest` now retries against the alternate **only for transport-level
+failures** (`TRANSPORT`, `TIMEOUT`). A provider status is never retried: a quota
+answer is the endpoint's real reply, and repeating it per origin would spend
+requests against an allowance that resets hours later.
+
+**Failover applies only to the built-in origins.** A user who sets `baseURL` to
+a self-hosted gateway or a compatibility proxy means exactly that host; silently
+redirecting their traffic to OpenAI's endpoint would be both surprising and a
+data leak. A custom origin fails on its own. Three tests pin this down,
+including one that would have caught the leak.
 
 ## The one thing still unverified, and what was done about it
 
@@ -234,6 +276,8 @@ Recorded because each was caught by a test rather than by inspection:
 | 10 | `client_version` hardcoded to a stale literal | Assumed optional; probing showed a 400 when absent | Discover the version from the local Codex install, overridable by config |
 | 11 | Cancelling a stream hung for the full 120s idle timeout | The abort listener was detached once the socket connected, so an abort arriving mid-stream never reached it | Keep the listener for the whole request; detach only when the exchange finishes |
 | 12 | A tool call assembled purely from deltas was reported as `EMPTY_RESPONSE` | The shape-based fallback did not set `#sawToolCall` | Set it when a tool-call delta is opened |
+| 13 | A transient `chatgpt.com` outage took the whole route down | The transport had a single hardcoded origin | Fail over between the two built-in origins, transport failures only |
+| 14 | Failover redirected a user's **custom** `baseURL` to OpenAI's endpoint | Failover was applied to every origin | Restrict it to the built-in origin set, so a self-hosted gateway is never bypassed |
 
 Items 10 and 11 were found by probing and by a test that started failing for the
 right reason — not by inspection. Item 12 came out of writing tests for the
