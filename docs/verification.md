@@ -19,15 +19,59 @@ npm test
 ```
 
 ```
-auth.test.mjs       13 passed, 0 failed
-catalog.test.mjs    42 passed, 0 failed
-convert.test.mjs    47 passed, 0 failed
-e2e.test.mjs        13 passed, 0 failed
-image.test.mjs       5 passed, 0 failed
-settings.test.mjs    5 passed, 0 failed
-─────────────────────────────────────
-ALL 6 TEST FILES PASSED   (125 assertions)
+auth.test.mjs          13 passed, 0 failed
+catalog.test.mjs       42 passed, 0 failed
+convert.test.mjs       47 passed, 0 failed
+e2e.test.mjs           13 passed, 0 failed
+image.test.mjs          5 passed, 0 failed
+settings-page.test.mjs  8 passed, 0 failed
+settings.test.mjs       5 passed, 0 failed
+url-join.test.mjs       6 passed, 0 failed
+usage.test.mjs          8 passed, 0 failed
+────────────────────────────────────────
+ALL 9 TEST FILES PASSED   (147 assertions)
 ```
+
+## The fallback route, and what the models page receives
+
+The plugin prefers the `codex` route and falls back to `codex-provider` when
+another adapter already owns the name. That path had never been exercised
+end-to-end, and it is the one a user is most likely to hit without realising it —
+any other plugin or a hand-written `llm-pi-ai.providers.codex` entry triggers it.
+
+`test/settings-page.test.mjs` mounts the plugin with an impostor adapter already
+holding `codex`, then checks what the Settings → Models page will actually
+receive:
+
+- the plugin serves `codex-provider` rather than failing;
+- **the directory row follows the route actually served** — a row advertising
+  `codex` while the plugin serves `codex-provider` would point the page at
+  someone else's adapter;
+- the impostor's route is untouched;
+- the `llm-codex` namespace still installs;
+- the fallback route is *usable* — it lists models, not merely registers.
+
+The same file also pins the non-fallback contract: every directory entry names a
+route that is actually registered, carries the metadata a row needs, and its
+namespace resolves to a section holding the fields the page renders.
+
+## What is still not verified, and the honest limits of each check
+
+Two things could not be confirmed against the live backend, and neither is
+papered over:
+
+**1. The usage endpoint path.** `USAGE_PATH = '/usage'` was written from the
+shape other providers use, not from evidence. Probing candidates against the real
+backend returned a uniform **403 HTML page for every path — including nonsense
+ones** — which means Cloudflare rejected the request shape before path routing
+was ever reached. That probe therefore proved *nothing*, and the path remains an
+assumption. It is low-risk only because `read()` returns `undefined` on any
+non-200 or unparseable body and the feature is decorative: a wrong path means
+the usage pill never appears, not a broken turn. `test/usage.test.mjs` pins that
+contract from eight angles, including that a missing credential makes no request
+and a slow endpoint cannot hang the caller.
+
+**2. The streaming event vocabulary.** See the dedicated section below.
 
 ## Isolated-harness installation, re-run against the finished code
 
